@@ -22,6 +22,11 @@
 #define PIN_NUM_CS   GPIO_NUM_15
 #define PIN_NUM_MEASURE GPIO_NUM_21
 
+                                       // Debug prints levels:
+#define MAIN_DEBUG_CONVERSION          //  Prints string at begining of class function execution
+#define MAIN_DEBUG_VERBOSE             //  Print some more information
+
+
 esp_err_t ret;
 spi_device_handle_t spi;
 
@@ -48,45 +53,30 @@ void spi_post_transfer_callback(spi_transaction_t *t) {
 
 }
 
-/* Send a command to the ADC. Uses spi_device_polling_transmit, which waits
+void spi_release_cs(void){
+  gpio_set_level(PIN_NUM_CS, HIGH);
+}
+
+/* Sending/reading commands to the ADC. Uses spi_device_polling_transmit, which waits
  * until the transfer is complete.
- *
  * Since command transactions are usually small, they are handled in polling
  * mode for higher speed. The overhead of interrupt transactions is more than
  * just waiting for the transaction to complete.
  */
-void adc_cmd(spi_device_handle_t spi, const uint8_t cmd, bool keep_cs_active) {
-
-    esp_err_t ret;
-    spi_transaction_t t;
-    memset(&t, 0, sizeof(t));       // Zero out the transaction
-    t.length = 8;                   // Total data length, in bits. All command are 8 bits
-    t.tx_buffer = &cmd;             // The data is the cmd itself
-    t.user = (void*)0;              // CS needs to be set to 0
-                                    // PERO QUE CULLONS
-                                    // La documetacio diu: 
-                                    // void *user; User-defined variable. Can be used to store eg transaction ID.
-                                    // Aquest cabron ho fa servir per baixar el CS abans de transmetre. Perque cullons no ho fa sol!
-    if (keep_cs_active) {
-        t.flags = SPI_TRANS_CS_KEEP_ACTIVE;       // Keep CS active after data transfer
-                                                  // AQUEST PUTO FLAG no funciona!
-                                                  // He tingut que crear spi_post_transfer_callback per pujar el flag o no
-    }
-    ret = spi_device_polling_transmit(spi, &t);   //Transmit!
-    assert(ret == ESP_OK);                        //Should have had no issues.
-}
-
 void adc_send_cmd(spi_device_handle_t spi, const uint8_t* cmd, const uint8_t size, bool keep_cs_active) {
-    
+
+  #ifdef MAIN_DEBUG_VERBOSE
     Serial.print(F("adc_send_cmd() Register 0x"));
     Serial.print(cmd[0], HEX);
     Serial.print(" ");
+    uint8_t r = cmd[0];
     Serial.print(getAddressDebugString(cmd[0]));
     Serial.print(F(", Payload:"));
     for (uint8_t i = 1; i < size; i ++) {
         Serial.printf(" [%d|0x%02x] ", i, cmd[i]);
     }
     Serial.println();
+  #endif
 
     esp_err_t ret;
     spi_transaction_t t;
@@ -97,24 +87,54 @@ void adc_send_cmd(spi_device_handle_t spi, const uint8_t* cmd, const uint8_t siz
     if (keep_cs_active) {
         t.flags = SPI_TRANS_CS_KEEP_ACTIVE;   //Keep CS active after data transfer
     }
-    
-    // When using SPI_TRANS_CS_KEEP_ACTIVE, bus must be locked/acquired
-    spi_device_acquire_bus(spi, portMAX_DELAY);
-    digitalWrite(PIN_NUM_CS, LOW); 
 
     ret = spi_device_polling_transmit(spi, &t); //Transmit!
     ESP_ERROR_CHECK_WITHOUT_ABORT(ret);          //Should have had no issues.
-
-    spi_device_release_bus(spi);
-
-    if (!keep_cs_active) {
-        digitalWrite(PIN_NUM_CS, HIGH); 
-    }
     
 }
 
+void adc_read_cmd(spi_device_handle_t spi, uint8_t* response, const uint8_t size, bool keep_cs_active) {
 
-bool waitRdyGoLow(void) {
+  #ifdef MAIN_DEBUG_VERBOSE
+    Serial.print(F("adc_read_cmd() Size: "));
+    Serial.println(size);
+  #endif
+
+  const uint8_t cmdArrayRead[4] = {0x00, 0x00, 0x00, 0x00};
+
+  spi_transaction_t t;
+  memset(&t, 0, sizeof(t));
+  t.length = 8 * size;                                             // Total data length, in bits.
+  t.tx_buffer = cmdArrayRead;
+  if (keep_cs_active){
+    t.flags = SPI_TRANS_CS_KEEP_ACTIVE | SPI_TRANS_USE_RXDATA;    // Receive into rx_data member of spi_transaction_t instead into memory at rx_buffer.
+  }else{
+    t.flags = SPI_TRANS_USE_RXDATA;    // Receive into rx_data member of spi_transaction_t instead into memory at rx_buffer.
+  }
+    
+  //spi_device_acquire_bus(spi, portMAX_DELAY);
+  ret = spi_device_polling_transmit(spi, &t);
+
+  #ifdef MAIN_DEBUG_VERBOSE
+    Serial.print(F("Response: "));
+  #endif
+
+  for (uint8_t i = 0; i < size; i ++) {
+    response[i] = t.rx_data[i];
+
+    #ifdef MAIN_DEBUG_VERBOSE
+      Serial.printf(" [%d|0x%02x] ", i, response[i]);
+    #endif
+  }
+
+  #ifdef MAIN_DEBUG_VERBOSE
+    Serial.println();
+  #endif
+}
+
+
+
+void waitRdyGoLow(void) {
   
   //  RDY only goes low when a valid conversion is available
   
@@ -126,26 +146,26 @@ bool waitRdyGoLow(void) {
   //  ensure that a data read is not attempted while the register is being
   //  updated. 
 
-  Serial.println(F("AD7190.waitRdyGoLow()"));
+  //Serial.println(F("AD7190.waitRdyGoLow()"));
 
-  gpio_set_level(PIN_NUM_MEASURE, LOW);
+  //gpio_set_level(PIN_NUM_MEASURE, LOW);
 
   pinMode(PIN_NUM_MISO, INPUT);
-  uint32_t t = millis();  
+  //uint32_t t = millis();  
   while (digitalRead(PIN_NUM_MISO) == HIGH) {
   }
 
-  gpio_set_level(PIN_NUM_MEASURE, HIGH);
+  //gpio_set_level(PIN_NUM_MEASURE, HIGH);
 
-  t = millis()-t;
-  Serial.printf("RDY in %dms\n", t);
+  //t = millis()-t;
+  //Serial.printf("RDY in %dms\n", t);
 
-  return true;
+  //return true;
 }
 
 void setup() {
   
-  Serial.begin(115200);
+  Serial.begin(500000);
   delay(2000);
   Serial.println("HOLA!");
 
@@ -235,40 +255,32 @@ void setup() {
   //  all registers to their power-on values. Following a reset, the user
   //  should allow a period of 500 µs before addressing the serial
   //  interface.
-  adc_cmd(spi, 0xFF, true);       //  1
-  adc_cmd(spi, 0xFF, true);       //  2
-  adc_cmd(spi, 0xFF, true);       //  3
-  adc_cmd(spi, 0xFF, true);       //  4
-  adc_cmd(spi, 0xFF, true);      //  5          // At least means 40 just 40? => 5 bytes * 8 bits
-  // adc_cmd(spi, 0xFF, true);        //  6
-  // adc_cmd(spi, 0xFF, false);       //  7
+
+  const uint8_t cmdReset[5] = {0xFF, 0xFF, 0xFF, 0xFF, 0xFF};         // At least means 40 just 40? => 5 bytes * 8 bits
+  adc_send_cmd(spi, cmdReset, 5, true);
 
   // From datasheet it should be 500 µs.
   // But RDY/MISO goes low after ~80 ms
   // Is it better to wait RDY/MISO to go low?
   // In the past I saw some issues. May be related with MODE3 bug
   waitRdyGoLow();
-  
+  spi_release_cs();
+
   //delay(1);
   Serial.println("AD7190 reset done");
 
-
   // Request to read REG_ID (0x60)
-  adc_cmd(spi, 0x60, true);
+  //adc_cmd(spi, 0x60, true);
+  uint8_t cmdGetId[1] = {0x60};
+  adc_send_cmd(spi, cmdGetId, 1, true);
 
-  spi_transaction_t t;
-  memset(&t, 0, sizeof(t));
-  t.length = 8 * 1;                                           // Total data length, in bits.
-  t.flags = SPI_TRANS_USE_RXDATA;                             // Receive into rx_data member of spi_transaction_t instead into memory at rx_buffer.
-  
-  esp_err_t ret = spi_device_polling_transmit(spi, &t);
-  assert(ret == ESP_OK);
+  uint8_t responseId[1] = {0x00};
+  adc_read_cmd(spi, responseId, 1, false);
+  Serial.printf("AD7190_REG_ID response: %X\n", responseId[0]);  // THIS IS AD7190 MUST BE 0x8x mine always reply 0x84 :)
 
-  Serial.printf("AD7190_REG_ID response: %X\n", t.rx_data[0]);  // THIS IS AD7190 MUST BE 0x8x mine always reply 0x84 :)
-  
   // The identification number for the AD7190 is stored in the ID register. This is a read-only register
   // Power-On/Reset = 0xX4
-  if ((t.rx_data[0] & 0xF) == 0x4){
+  if ((responseId[0] & 0xF) == 0x4){
     Serial.println(F("AD7190 Identification OK"));
   }else{
     Serial.println(F("AD7190 Identification FAILED!"));
@@ -277,49 +289,51 @@ void setup() {
   // Configure AD7190 to read internal temperature sensor (channel: 4)
 
   // Release bus
-  spi_device_release_bus(spi);
+  //spi_device_release_bus(spi);
 
   // Write AD7190_CONF_CHAN register
   // Select Temperature sensor channel
   // No Chop + BUF + Gain 0
-  const uint8_t cmdArray[4] = {0x10, 0x00, 0x04, 0x10};
-  adc_send_cmd(spi, cmdArray, 4, false);
+  const uint8_t cmdConfChanTemp[4] = {0x10, 0x00, 0x04, 0x10};
+  adc_send_cmd(spi, cmdConfChanTemp, 4, false);
 
   // Write AD7190_CONF_MODE register
   // Mode 1: Single conversion mode
   // No data status
   // Internal 4.92 MHz clock. Pin MCLK2 is tristated     --> Aixo es pot canviar a external clock tambe (esta montat a la PCB)
-  const uint8_t cmdArray2[4] = {0x08, 0x28, 0x00, 0x60};
-  adc_send_cmd(spi, cmdArray2, 4, true);
-
-  memset(&t, 0, sizeof(t));
-  t.length = 8 * 3;                                           // Total data length, in bits.
-  t.flags = SPI_TRANS_USE_RXDATA;                             // Receive into rx_data member of spi_transaction_t instead into memory at rx_buffer.
+  const uint8_t cmdConfModeTemp[4] = {0x08, 0x28, 0x00, 0x60};
+  adc_send_cmd(spi, cmdConfModeTemp, 4, true);
   
-  spi_device_acquire_bus(spi, portMAX_DELAY);
-
   // Wait AD7190 conversion (MISO/RDY pin to go low)
+  // This conversion is temperature channel (just for debuging)
   waitRdyGoLow();
-  
+
+  // // READ AD7190_DATA_REG register
+  // adc_cmd(spi, 0x58, true);
+
   // READ AD7190_DATA_REG register
-  adc_cmd(spi, 0x58, true);
+  // Data from previous conversion is temperature
+  uint8_t cmdGetDataReg[1] = {0x58};
+  adc_send_cmd(spi, cmdGetDataReg, 1, true);
 
-  ret = spi_device_polling_transmit(spi, &t);
-  assert(ret == ESP_OK);
+  uint8_t responseDataTemp[3] = {0x00, 0x00, 0x00};
+  adc_read_cmd(spi, responseDataTemp, 3, false);
+  
+  // Get temperature from raw bytes
+  uint32_t rawDataTemperature = (responseDataTemp[0] << 16) + (responseDataTemp[1] << 8) + (responseDataTemp[2]);
 
-  uint32_t rawData = (t.rx_data[0] << 16) + (t.rx_data[1] << 8) + (t.rx_data[2]);
-
+  //  From datasheet we know:
   //  Temp (K) = (Conversion – 0x800000)/2815 K
   //  Temp (°C) = Temp (K) – 273
   float temperature = 0x0;
-  temperature = rawData - 0x800000;
+  temperature = rawDataTemperature - 0x800000;
   temperature /= 2815;            // Kelvin Temperature
   temperature -= 273;             //Celsius Temperature
 
-  Serial.printf("AD7190 Temperature: %.1f°C RAW: %X\n", temperature, rawData);
+  Serial.printf("AD7190 Temperature: %.1f°C RAW: %X\n", temperature, rawDataTemperature);
 
   // Release bus
-  spi_device_release_bus(spi);
+  //spi_device_release_bus(spi);
   
   // -------------------------------------------------------------
   // Configure Ad7190 Continuous Read
@@ -329,23 +343,26 @@ void setup() {
   // BPDS: Bridge power-down switch (Switch closed)
   // P2 and P3 enabled
   // P3 ON! (White LED)
-  const uint8_t cmdArray3[2] = {0x28, 0x68};
-  adc_send_cmd(spi, cmdArray3, 2, false);
+  const uint8_t cmdGpioConf[2] = {0x28, 0x68};
+  adc_send_cmd(spi, cmdGpioConf, 2, false);
 
   // Write CONF_CHAN register
   // CHOP ON
   // Channel 1 (AIN1/AIN2) and Channel 2 (AIN3/AIN4)
   // Gain 128
-  const uint8_t cmdArray4[4] = {0x10, 0x80, 0x03, 0x07};
-  adc_send_cmd(spi, cmdArray4, 4, false);
+  const uint8_t cmdChannelConfTwoGauges[4] = {0x10, 0x00, 0x03, 0x07};
+  adc_send_cmd(spi, cmdChannelConfTwoGauges, 4, false);
 
   // Write CONF_MODE register
   // Mode 0: Continuous conversion mode
   // DAT_STA active: transmission of status register contents after each data register read
   // Internal 4.92 MHz clock. Pin MCLK2 is tristated
   // ENPAR: parity checking on the data register
-  const uint8_t cmdArray5[4] = {0x08, 0x18, 0x20, 0x50};
-  adc_send_cmd(spi, cmdArray5, 4, true);                        // Important: Keep CS active for MISO/RDY to report readyness
+  const uint8_t cmdModeConfContinousMode[4] = {0x08, 0x18, 0x20, 0x01};
+  // 0x50 (80d) is 8Hz (132ms) CHOP ON
+  // 0x01 (1d) is ~604Hz (2ms) CHOP ON
+  // 0x01 (1d) is ~1.210KHz (826us) CHOP OFF
+  adc_send_cmd(spi, cmdModeConfContinousMode, 4, false);                        // Important: Keep CS active for MISO/RDY to report readyness
   
   // READ 10 SAMPLES IN CONTINOUS MODE!
   // TWO CHANNELS!
@@ -356,7 +373,7 @@ void setup() {
   // Set Chip select to low
   // gpio_set_level(PIN_NUM_CS, LOW);
   
-  spi_device_acquire_bus(spi, portMAX_DELAY);
+  //spi_device_acquire_bus(spi, portMAX_DELAY);
   // Read Data Register
   // CREAD ON: 
   //  Continuous read of the data register. When this bit is set to 1 (and the data register is selected), the serial
@@ -371,40 +388,32 @@ void setup() {
   //  to disable continuous read. Additionally, a reset occurs if 40 consecutive 1s are seen on DIN. 
   //  Therefore, DIN should be held low until an instruction is to be written to the device.
   
-  gpio_set_level(PIN_NUM_CS, LOW);
 
-  adc_cmd(spi, 0x5C, true);
-  spi_device_release_bus(spi);
-
-  Serial.printf("Size of t: %d\n", sizeof(t));
+  // READ AD7190_DATA_REG register
+  // CREAD: Continuous read of the data register
+  uint8_t cmdGetDataRegCread[1] = {0x5C};
+  adc_send_cmd(spi, cmdGetDataRegCread, 1, true);
 
   const uint8_t cmdArrayRead[4] = {0x00, 0x00, 0x00, 0x00};
-
+  spi_transaction_t t;
   uint8_t counter = 1;
   while (counter <= 10){
 
+    waitRdyGoLow();                                               //  Wait AD7190 conversion to finish        
+
     memset(&t, 0, sizeof(t));
     t.length = 8 * 4;                                             // Total data length, in bits.
-    //t.tx_data[0] = 0;
-    //t.tx_data[1] = 0;
-    //t.tx_data[2] = 0;
-    //t.tx_data[3] = 0;
     t.tx_buffer = cmdArrayRead;
     t.flags = SPI_TRANS_CS_KEEP_ACTIVE | SPI_TRANS_USE_RXDATA;    // Receive into rx_data member of spi_transaction_t instead into memory at rx_buffer.
-    //t.user = (void*)1;                                          // User-defined variable. Can be used to store eg transaction ID.
-    
-    waitRdyGoLow();                                               //  Wait AD7190 conversion to finish        
-    
-    spi_device_acquire_bus(spi, portMAX_DELAY);
+
     ret = spi_device_polling_transmit(spi, &t);
-    spi_device_release_bus(spi);
 
-    uint32_t result = (t.rx_data[0] << 16) | (t.rx_data[1] << 8) | t.rx_data[2];
-    Serial.println(result, HEX);
-
+    uint32_t adcMeasurement = (t.rx_data[0] << 16) | (t.rx_data[1] << 8) | t.rx_data[2];
     uint8_t status = t.rx_data[3];
-    Serial.printf("Sample %d: 0x%X - Status: 0x%X - ", counter, result, status);
-    printStatusInfo(status);
+
+    Serial.print(status & 0x7, HEX);
+    Serial.print("-");
+    Serial.println(adcMeasurement, HEX);
 
     counter = counter + 1;
   }
@@ -500,7 +509,7 @@ char* getAddressDebugString(uint8_t a){
     strcpy(c,"  ");
   }
 
-  char regAdd_char[20];
+  char regAdd_char[22];
   strcpy(regAdd_char,"AD7190_UNKNOWN");
     
   switch(regAdd) {
@@ -554,3 +563,4 @@ char* getAddressDebugString(uint8_t a){
 
   return bufferDebugAddress;  
 }
+
